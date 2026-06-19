@@ -1,0 +1,11 @@
+{
+  "port": 8080,
+  "printerName": "POS80 Printer",
+  "companyName": "Million Mart",
+  "branchAddress": "No.12, 62th Street, Corner of 104th St, Chan Mya Thar Si, Mandalay.",
+  "operatingHours": "Open Daily : 9:00 AM To 10:00 PM",
+  "footerMessage1": "\"Thank You\"",
+  "footerMessage2": "\"Items sold are not returnable\"",
+  "cduComPort": "COM3",
+  "cduBaudRate": 2400
+}
