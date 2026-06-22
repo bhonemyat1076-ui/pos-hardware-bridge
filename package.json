@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "start:background": "set \"HIDE_WINDOW=1\" && electron ."
   },
   "dependencies": {
     "cors": "^2.8.5",

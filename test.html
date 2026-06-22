@@ -1,89 +1,4 @@
-const express = require('express');
-const fs = require('fs');
-const path = require('path');
-
-const app = express();
-const configPath = path.join(__dirname, 'config.json');
-
-function loadConfig() {
-  try {
-    if (fs.existsSync(configPath)) {
-      return JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    }
-  } catch (e) {
-    console.error("Config missing or malformed, loading defaults");
-  }
-  return {
-    port: 8080,
-    companyName: "Million Mart",
-    operatingHours: "Open Daily : 9:00 AM To 10:00 PM",
-    footerMessage1: '"Thank You"',
-    footerMessage2: '"Items sold are not returnable"'
-  };
-}
-
-// Global CORS Handlers
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', '*');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
-
-app.use(express.json());
-
-// Intercept the receipt print path
-app.post('/PrinterService/ps/rptslip', (req, res) => {
-  console.log('====== RECEIPT DATA CAPTURED ======');
-  const data = req.body || {};
-  const config = loadConfig();
-
-  // Value Formatter Helpers
-  const formatAmount = (num) =>
-    Number(num || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-
-  const itemRows = (data.detailList || []).map(item => {
-    const qty = parseInt(item.qty || 0);
-    const unit = item.unit || 'Pcs';
-    let stockName = (item.stock || '').trim();
-    if (stockName.endsWith(';')) stockName = `${stockName.slice(0, -1)},`;
-    
-    const price = parseFloat(item.price || 0);
-    const lineTotal = qty * price;
-    const discount = Math.abs(parseFloat(item.discount || 0));
-
-    let rowHtml = `
-      <div class="item">
-        <span class="qty">${qty}</span>
-        <span class="name">${unit} ${stockName}</span>
-        <span class="price">${formatAmount(lineTotal)}</span>
-      </div>
-    `;
-
-    // Append item-specific markdown lines if any are present
-    if (discount > 0) {
-      rowHtml += `
-        <div class="item" style="margin-top: -2px; font-weight: bold;">
-          <span class="qty">&nbsp;</span>
-          <span class="name" style="text-align: right; padding-right: 10px;">Discount:</span>
-          <span class="price">-${formatAmount(discount)}</span>
-        </div>
-      `;
-    }
-    return rowHtml;
-  }).join('');
-
-  // Computations parsing
-  const cashPayment = data.paymentDetail?.find(p => p.payAmount > 0) || { payType: "Cash", payAmount: data.netAmount || 0 };
-  const taxLabel = data.isTaxIn === 0 ? "Total(Exclusive Tax)" : "Total(Inclusive Tax)";
-  const itemDiscount = data.detailDisc || data.disAmount || 0;
-  const paidAmount = cashPayment.payAmount || data.netAmount || 0;
-  const totalQty = parseFloat(data.mainQty || 0).toFixed(1);
-
-  // Exact target HTML using exact templates and styles for 80mm thermal printer formatting
-  const htmlContent = `
-    <!DOCTYPE html>
+  <!DOCTYPE html>
     <html>
     <head>
     <style>
@@ -186,7 +101,7 @@ app.post('/PrinterService/ps/rptslip', (req, res) => {
 
       <div class="summary">
         <div class="line">
-         <span class="qty" style="text-align: left; margin-right: 42px;">${totalQty}</span>
+          <span class="qty" style="text-align: left; margin-right: 42px;">5.0</span>
           <span class="label">${taxLabel}</span>
           <span class="amount">Ks ${formatAmount(data.totalAmount)}</span>
         </div>
@@ -224,31 +139,3 @@ app.post('/PrinterService/ps/rptslip', (req, res) => {
       </div>
     </body>
     </html>
-  `;
-
-  // Safe background dispatch to Electron container layout pipeline
-  if (global.printHTMLReceipt) {
-    global.printHTMLReceipt(htmlContent, config.printerName);
-    res.status(200).json({ status: "success", message: "Receipt sent to printer" });
-  } else {
-    console.error("Printer binding not available.");
-    res.status(500).json({ status: "error", message: "Failed to send receipt to printer" });
-  }
-});
-
-// Pole CDU data intercept receiver loop
-app.post('/PrinterService/ps/sendCDUData', (req, res) => {
-  res.status(200).json({ status: "success" });
-});
-
-// Fallback listener
-app.use((req, res) => { res.status(200).send("Data received"); });
-
-function startServer() {
-  const config = loadConfig();
-  app.listen(config.port, '0.0.0.0', () => {
-    console.log(`Express engine running on hardware endpoint configuration port: ${config.port}`);
-  });
-}
-
-module.exports = { startServer };
