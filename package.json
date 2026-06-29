@@ -1,16 +1,61 @@
 {
   "name": "pos-hardware-bridge",
   "version": "1.0.0",
+  "description": "POS Hardware Bridge - Customer Display and Printer Service",
+  "author": "Min Chit Thu",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "start:background": "set \"HIDE_WINDOW=1\" && electron ."
+    "start:background": "set \"HIDE_WINDOW=1\" && electron .",
+    "build": "electron-builder --win",
+    "build:portable": "electron-builder --win -- portable",
+    "build:installer": "electron-builder --win"
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "serialport": "^13.0.0"
   },
   "devDependencies": {
-    "electron": "^30.0.0" 
+    "electron": "^30.5.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.minchitthu.pos-hardware-bridge",
+    "productName": "POS Hardware Bridge",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "config.json",
+      "server.js",
+      "package.json",
+      "tray_icon.png",
+      "server.cert",
+      "server.key",
+      "node_modules/**/*"
+    ],
+    "npmRebuild": false,
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "POS Hardware Bridge",
+      "perMachine": true,
+      "runAfterFinish": false,
+      "include": "installer.nsh",
+      "warningsAsErrors": false
+    }
   }
 }

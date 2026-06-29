@@ -3,8 +3,28 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const configPath = path.join(__dirname, 'config.json');
+const cduLogPath = path.join(__dirname, 'cdu_log.txt');
 
+// Global variables to track state and handle timeout resets
+let currentCduState = {
+  mode: "WELCOME", // WELCOME, TRANSACTION, THANKYOU
+  amount: "0.00"
+};
+let idleResetTimeout = null;
+
+// 1. Define where the configuration file lives dynamically
+const getStoragePath = () => {
+  // If running in packaged production mode, point to the writable ProgramData directory
+  if (process.env.NODE_ENV !== 'development' && process.env.PROGRAMDATA) {
+    return path.join(process.env.PROGRAMDATA, 'POS Hardware Bridge');
+  }
+  // Fallback to local project folder during regular development tracking (npm start)
+  return __dirname;
+};
+
+const configPath = path.join(getStoragePath(), 'config.json');
+
+// 2. Your updated loadConfig function
 function loadConfig() {
   try {
     if (fs.existsSync(configPath)) {
@@ -13,12 +33,20 @@ function loadConfig() {
   } catch (e) {
     console.error("Config missing or malformed, loading defaults");
   }
+  
+  // Return your exact retail parameters if the file doesn't exist yet
   return {
     port: 8080,
-    companyName: "Million Mart",
+    companyName: "Company Name",
     operatingHours: "Open Daily : 9:00 AM To 10:00 PM",
-    footerMessage1: '"Thank You"',
-    footerMessage2: '"Items sold are not returnable"'
+    footerMessage1: '"Footer Message 1"',
+    footerMessage2: '"Footer Message 2"',
+    cdu: {
+      enabled: true,
+      comPort: "AUTO",
+      baudRate: 9600,
+      welcomeMessage: "Welcome Massage"
+    }
   };
 }
 
@@ -33,11 +61,23 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-// Intercept the receipt print path
+// ==========================================
+// 1. RECEIPT PRINT PATH INTERCEPTOR
+// ==========================================
 app.post('/PrinterService/ps/rptslip', (req, res) => {
   console.log('====== RECEIPT DATA CAPTURED ======');
   const data = req.body || {};
   const config = loadConfig();
+
+  const storeContactDetails = [];
+if (config.tel1 && config.tel1.trim()) storeContactDetails.push(`Tel: ${config.tel1.trim()}`);
+if (config.tel2 && config.tel2.trim()) storeContactDetails.push(`Tel: ${config.tel2.trim()}`);
+if (config.email1 && config.email1.trim()) storeContactDetails.push(`Email: ${config.email1.trim()}`);
+if (config.email2 && config.email2.trim()) storeContactDetails.push(`Email: ${config.email2.trim()}`);
+
+const contactHtmlLine = storeContactDetails.length > 0 
+  ? `<span>${storeContactDetails.join(' | ')}</span><br/>` 
+  : '';
 
   // Value Formatter Helpers
   const formatAmount = (num) =>
@@ -55,13 +95,12 @@ app.post('/PrinterService/ps/rptslip', (req, res) => {
 
     let rowHtml = `
       <div class="item">
-        <span class="qty">${qty}</span>
-        <span class="name">${unit} ${stockName}</span>
+        <span class="qty">${qty} ${unit}</span>
+        <span class="name">${stockName}</span>
         <span class="price">${formatAmount(lineTotal)}</span>
       </div>
     `;
 
-    // Append item-specific markdown lines if any are present
     if (discount > 0) {
       rowHtml += `
         <div class="item" style="margin-top: -2px; font-weight: bold;">
@@ -79,9 +118,25 @@ app.post('/PrinterService/ps/rptslip', (req, res) => {
   const taxLabel = data.isTaxIn === 0 ? "Total(Exclusive Tax)" : "Total(Inclusive Tax)";
   const itemDiscount = data.detailDisc || data.disAmount || 0;
   const paidAmount = cashPayment.payAmount || data.netAmount || 0;
+  const changeAmount = data.paidAmount - (data.netAmount || 0);
   const totalQty = parseFloat(data.mainQty || 0).toFixed(1);
 
   // Exact target HTML using exact templates and styles for 80mm thermal printer formatting
+  const companyHtml = config.companyName && String(config.companyName).trim()
+    ? `<strong>${String(config.companyName).trim()}</strong><br/>`
+    : '';
+  const branchHtml = config.branchAddress && String(config.branchAddress).trim()
+    ? `<span>${String(config.branchAddress).trim()}</span><br/>`
+    : '';
+  const operatingHtml = config.operatingHours && String(config.operatingHours).trim()
+    ? `<span>${String(config.operatingHours).trim()}</span><br/>`
+    : '';
+  const footerHtml1 = config.footerMessage1 && String(config.footerMessage1).trim()
+    ? `<div>${String(config.footerMessage1).trim()}</div>`
+    : '';
+  const footerHtml2 = config.footerMessage2 && String(config.footerMessage2).trim()
+    ? `<div>${String(config.footerMessage2).trim()}</div>`
+    : '';
   const htmlContent = `
     <!DOCTYPE html>
     <html>
@@ -148,9 +203,10 @@ app.post('/PrinterService/ps/rptslip', (req, res) => {
     </head>
     <body>
       <div class="text-center" style="margin-top: 10px;">
-        <strong>${config.companyName}</strong><br/>
-        <span>${config.branchAddress || '-----------------------------------'}</span><br/><br/>
-        <span>${config.operatingHours}</span><br/>
+        ${companyHtml}
+        ${branchHtml}
+        ${contactHtmlLine}
+        ${operatingHtml}
         <div style="margin: 3px 0; font-weight: bold;">CASH SALE</div>
       </div>
 
@@ -186,13 +242,13 @@ app.post('/PrinterService/ps/rptslip', (req, res) => {
 
       <div class="summary">
         <div class="line">
-         <span class="qty" style="text-align: left; margin-right: 42px;">${totalQty}</span>
+         <span class="qty" style="text-align: left;">${totalQty}</span>
           <span class="label">${taxLabel}</span>
           <span class="amount">Ks ${formatAmount(data.totalAmount)}</span>
         </div>
         ${itemDiscount > 0 ? `
         <div class="line">
-          <span class="label" style=" text-align: left; padding-left: 60px;">Item Discount</span>
+          <span class="label" style=" text-align: left; padding-left: 40px;">Item Discount</span>
           <span class="amount">-${formatAmount(itemDiscount)}</span>
         </div>` : ''}
       </div>
@@ -201,7 +257,7 @@ app.post('/PrinterService/ps/rptslip', (req, res) => {
 
       <div class="summary">
         <div class="line">
-          <span class="label" style="font-weight: bold; text-align: left; padding-left: 60px;">Net Amount</span>
+          <span class="label" style="font-weight: bold; text-align: left; padding-left: 40px;">Net Amount</span>
           <span class="amount" style="font-weight: bold;">Ks ${formatAmount(data.netAmount)}</span>
         </div>
       </div>
@@ -210,23 +266,29 @@ app.post('/PrinterService/ps/rptslip', (req, res) => {
 
       <div class="summary">
         <div class="line">
-          <span class="label" style="font-weight: bold; text-align: left; padding-left: 60px;">Paid By : ${cashPayment.payType || 'Cash'}</span>
+          <span class="label" style="font-weight: bold; text-align: left; padding-left: 40px;">Paid By : ${cashPayment.payType || 'Cash'}</span>
           <span class="amount" style="font-weight: bold;">Ks ${formatAmount(paidAmount)}</span>
         </div>
       </div>
+      ${changeAmount > 0 ? `
+      <div class="summary">
+        <div class="line">
+          <span class="label" style="font-weight: bold; text-align: left; padding-left: 40px;">Change</span>
+          <span class="amount" style="font-weight: bold;">Ks ${formatAmount(Math.abs(changeAmount))}</span>
+        </div>
+      </div>` : ''}
 
       <div class="dashed-line"></div>
 
       <br/>
       <div class="text-center" style="margin-bottom: 10px;">
-        ${config.footerMessage1}<br/>
-        ${config.footerMessage2}
+        ${footerHtml1}
+        ${footerHtml2}
       </div>
     </body>
     </html>
   `;
 
-  // Safe background dispatch to Electron container layout pipeline
   if (global.printHTMLReceipt) {
     global.printHTMLReceipt(htmlContent, config.printerName);
     res.status(200).json({ status: "success", message: "Receipt sent to printer" });
@@ -236,18 +298,92 @@ app.post('/PrinterService/ps/rptslip', (req, res) => {
   }
 });
 
-// Pole CDU data intercept receiver loop
+// ==========================================
+// 2. POLE CDU INTERCEPT WORKFLOW RECEIVER (Fixed for String Numbers with Commas)
+// ==========================================
 app.post('/PrinterService/ps/sendCDUData', (req, res) => {
+  const timestamp = new Date().toISOString();
+  const data = req.body || {};
+  const config = loadConfig();
+  const defaultGreeting = config.cdu?.welcomeMessage || "Thank you for coming";
+  
+  let displayOutput = "";
+
+  // Clear any existing idle-return clocks running in the background
+  if (idleResetTimeout) {
+    clearTimeout(idleResetTimeout);
+    idleResetTimeout = null;
+  }
+
+  // Helper function to safely clean up strings containing commas before parsing to a number
+  const parsePayloadAmount = (val) => {
+    if (val === undefined || val === null) return 0;
+    // If it's a string, strip out all commas before converting to a number
+    if (typeof val === 'string') {
+      return parseFloat(val.replace(/,/g, '')) || 0;
+    }
+    return parseFloat(val) || 0;
+  };
+
+  // A. ITEM SCAN MODE (Type 2: shows running subtotal with discounts applied)
+  if (data.type === 2) {
+    currentCduState.mode = "TRANSACTION";
+    const rawAmount = data.total !== undefined ? data.total : (data.price || 0);
+    const cleanNumber = parsePayloadAmount(rawAmount);
+    
+    currentCduState.amount = cleanNumber.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    displayOutput = `Amount: Ks ${currentCduState.amount}`;
+  } 
+  
+  // B. SLIP SAVE MODE (Type 3: holds final grand calculation total)
+  else if (data.type === 3) {
+    currentCduState.mode = "TRANSACTION";
+    const cleanNumber = parsePayloadAmount(data.total);
+    
+    currentCduState.amount = cleanNumber.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    displayOutput = `Total Amount: Ks ${currentCduState.amount}`;
+  } 
+  
+  // C. SLIP PRINTING / RESET IDLE MODE (Type 1: triggers Thank You, then defaults)
+  else {
+    currentCduState.mode = "THANKYOU";
+    currentCduState.amount = "0.00";
+    displayOutput = "Thank You!";
+
+    // Start a 5-second countdown to revert the screen back to the Configured message
+    idleResetTimeout = setTimeout(() => {
+      currentCduState.mode = "WELCOME";
+      console.log(`[CDU] Screen reset to config statement: "${defaultGreeting}"`);
+      
+      if (global.writeToCDU) {
+        global.writeToCDU(defaultGreeting.substring(0, 40));
+      }
+    }, 5000);
+  }
+
+  // Write event blocks to your text logging tracks
+  const formattedLogEntry = `[${timestamp}] [CDU RUN] ${displayOutput}\n`;
+  fs.appendFile(cduLogPath, formattedLogEntry, 'utf8', (err) => {
+    if (err) console.error("Failed to write CDU data to log file:", err);
+  });
+
+  // Relay strings straight to your physical main process drivers
+  if (global.writeToCDU) {
+    if (currentCduState.mode === "THANKYOU") {
+      global.writeToCDU("     THANK YOU      \n    COME AGAIN!     ");
+    } else if (currentCduState.mode === "TRANSACTION") {
+      global.writeToCDU(`TOTAL AMOUNT:       \nKs ${currentCduState.amount}`);
+    }
+  }
+
   res.status(200).json({ status: "success" });
 });
 
-// Fallback listener
-app.use((req, res) => { res.status(200).send("Data received"); });
-
 function startServer() {
   const config = loadConfig();
-  app.listen(config.port, '0.0.0.0', () => {
-    console.log(`Express engine running on hardware endpoint configuration port: ${config.port}`);
+  // MUST return the app.listen instance so Electron can call .close() on it
+  return app.listen(config.port, '0.0.0.0', () => {
+    console.log(`Express engine running on port: ${config.port}`);
   });
 }
 
